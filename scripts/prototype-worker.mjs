@@ -1,0 +1,9 @@
+import {chromium} from 'playwright';import fs from 'node:fs/promises';import path from 'node:path';import crypto from 'node:crypto';
+const b=await chromium.connectOverCDP('http://127.0.0.1:9223');const p=b.contexts()[0].pages()[0];await p.waitForFunction(()=>window.app?.workspace?.layoutReady);
+const root=path.resolve('vendor/zotero-document-worker');const data=await fs.readFile('qa-vault/reader-test.pdf');
+await p.exposeFunction('zsAsset',async name=>{if(!/^[\w./-]+$/.test(name)||name.includes('..'))throw Error('Invalid'); console.log('ASSET',name);const a=await fs.readFile(path.join(root,name));return a.toString('base64');});
+const result=await p.evaluate(async({code,data,hash})=>{
+const w=new Worker(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));
+const bytes=Uint8Array.from(atob(data),c=>c.charCodeAt(0));return await new Promise(resolve=>{const timer=setTimeout(()=>{w.terminate();resolve({timeout:true});},120000);w.onerror=e=>{clearTimeout(timer);w.terminate();resolve({error:e.message});};w.onmessage=async e=>{const m=e.data;if(m.action==='FetchData'){try{const v=Uint8Array.from(atob(await window.zsAsset(m.data)),c=>c.charCodeAt(0));w.postMessage({responseID:m.id,data:v.buffer},[v.buffer]);}catch(e){w.postMessage({responseID:m.id,error:{message:e.message}});}}else if(m.responseID===101){clearTimeout(timer);w.terminate();resolve(m.error?{error:m.error}:{size:m.data.buf.byteLength,buf:btoa(String.fromCharCode(...new Uint8Array(m.data.buf)))});}};w.postMessage({id:101,action:'getStructuredDocumentText',data:{buf:bytes.buffer,sourceHash:hash,contentType:'application/pdf',reportProgress:true}},[bytes.buffer]);});
+},{code:await fs.readFile(path.join(root,'worker.js'),'utf8'),data:data.toString('base64'),hash:crypto.createHash('md5').update(data).digest('hex')});
+if(result.buf){await fs.writeFile('.research/zotero10/test-produced.sdt',Buffer.from(result.buf,'base64'));delete result.buf;}console.log(result);await b.close();

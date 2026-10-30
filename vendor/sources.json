@@ -1,0 +1,22 @@
+{
+  "document-worker": {
+    "commit": "8fb70af4000873561c82b2f4eb88be190efb9979",
+    "url": "https://codeload.github.com/zotero/document-worker/zip/8fb70af4000873561c82b2f4eb88be190efb9979",
+    "archiveSHA256": "8e0aa9fba8931352498586159e6afbcc7b058f7c802ca6a8010898a87001f429"
+  },
+  "pdf.js": {
+    "commit": "f4d05caed86bd38f6ccd2171dbbd5cb832d72912",
+    "url": "https://codeload.github.com/zotero/pdf.js/zip/f4d05caed86bd38f6ccd2171dbbd5cb832d72912",
+    "archiveSHA256": "7b70b1422e436733ed211cb28666db1e7f84368ae734da7a70439f1b92da37c1"
+  },
+  "structured-document-text": {
+    "commit": "7963c11faac4595be3bbe86b7574704a22c67bed",
+    "url": "https://codeload.github.com/zotero/structured-document-text/zip/7963c11faac4595be3bbe86b7574704a22c67bed",
+    "archiveSHA256": "011dfd0fd8765b66edae773f0b1a5c923f3954f842840244f82a344c5e8e687f"
+  },
+  "reader": {
+    "commit": "5802d14a76552e10000124d2431e352e92054f01",
+    "url": "https://codeload.github.com/zotero/reader/zip/5802d14a76552e10000124d2431e352e92054f01",
+    "archiveSHA256": "cee59296beff65a03d59be46dda7130b623389d2c3a01d507c60ab446358655f"
+  }
+}

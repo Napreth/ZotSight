@@ -1,0 +1,9 @@
+{
+  "SDT_SCHEMA_VERSION": "1.2.0",
+  "SDT_PACK_VERSION": 1,
+  "SDT_PROCESSOR_VERSIONS": {
+    "pdf": 14,
+    "epub": 2,
+    "snapshot": 1
+  }
+}

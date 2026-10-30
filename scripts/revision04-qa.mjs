@@ -1,0 +1,22 @@
+import {chromium} from 'playwright';
+import assert from 'node:assert/strict';
+const b=await chromium.connectOverCDP('http://127.0.0.1:9223');const p=b.contexts()[0].pages()[0];const errors=[];p.on('pageerror',e=>errors.push(e.message));
+const root=p.locator('.workspace-leaf.mod-active .zs-view');
+assert.equal(await root.locator('.zs-navigation.is-open').count(),0);
+assert.equal(await root.locator('.zs-annotation-tools button').count(),7);
+assert.deepEqual(await root.locator('.zs-annotation-tools button').evaluateAll(es=>es.map(e=>e.getAttribute('aria-label'))),['高亮','下划线','便笺','文字批注','区域批注','手绘','批注颜色']);
+const source=root.locator('.zs-source-bar'),top=await source.boundingBox();
+await root.locator('.zs-pdf-scroll').evaluate(el=>{el.scrollTop=1000;});assert.equal((await source.boundingBox()).y,top.y);
+await root.getByRole('button',{name:'文献信息和附件',exact:true}).click();
+const names=await root.locator('.zs-source-option .zs-source-label').evaluateAll(es=>es.map(e=>({full:e.dataset.fullTitle,label:e.textContent,width:e.clientWidth,scroll:e.scrollWidth})));
+assert.equal(names[0].full,'信息');for(const n of names){assert.ok(n.scroll<=n.width+1,JSON.stringify(n));if(n.label!==n.full&&/\.pdf$/i.test(n.full))assert.match(n.label,/\.\.\. \.pdf$/i);}
+await p.screenshot({path:'test-results/ZotSight-0.4-menu.png'});console.log('FIXED_SOURCE_ROW_AND_EXTENSION_PRESERVING_MENU',JSON.stringify(names));
+await p.keyboard.press('Escape');assert.equal(await root.locator('.zs-source-menu').isVisible(),false);
+await root.getByRole('button',{name:'文献信息和附件',exact:true}).click();await root.getByRole('option',{name:'信息',exact:true}).click();
+assert.equal(await root.locator('.zs-item-heading,.zs-info-section,.zs-info-footer').count(),0);
+const rows=await root.locator('.zs-field-row').evaluateAll(es=>es.map(e=>({label:e.querySelector('.zs-field-label').textContent,value:e.querySelector('.zs-field-value').textContent})));
+assert.equal(rows.filter(r=>r.label==='作者').length,1);assert.ok(rows.find(r=>r.label==='作者').value.includes('Ju, Tianjie'));assert.ok(rows.find(r=>r.label==='作者').value.includes('；'));
+await p.screenshot({path:'test-results/ZotSight-0.4-info.png'});
+await root.locator('.zs-document-surface').evaluate(el=>{el.scrollTop=el.scrollHeight;});assert.equal((await source.boundingBox()).y,top.y);console.log('SIMPLIFIED_INFO_AND_SINGLE_AUTHOR_ROW');
+await root.getByRole('button',{name:'文献信息和附件',exact:true}).click();await root.getByRole('option',{name:'Preprint PDF',exact:true}).click();await root.locator('.zs-pdf-page[data-page="1"] .textLayer span').first().waitFor();assert.equal(await root.locator('.zs-navigation.is-open').count(),0);
+assert.deepEqual(errors,[]);console.log('REVISION04_UI_PASSED');await b.close();

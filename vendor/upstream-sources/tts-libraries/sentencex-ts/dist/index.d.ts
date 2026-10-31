@@ -1,0 +1,10 @@
+export { Language, parseAbbreviations } from './language';
+export type { SentenceBoundary } from './language';
+export { chunkText } from './chunk-text';
+export { LANGUAGE_FALLBACKS } from './fallbacks';
+export { LANGUAGE_REGISTRY } from './languages';
+import type { SentenceBoundary } from './language';
+import { Language } from './language';
+export declare function languageFactory(languageCode: string): Language;
+export declare function segment(languageCode: string, text: string): string[];
+export declare function getSentenceBoundaries(languageCode: string, text: string): SentenceBoundary[];

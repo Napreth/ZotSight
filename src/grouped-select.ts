@@ -1,0 +1,39 @@
+import {Scope,setIcon,type App} from 'obsidian';
+import {fitFilename} from './filename';
+
+export interface SelectOption {value:string;label:string;group?:string;disabled?:boolean;icon?:string}
+export interface SelectAction {label:string;icon:string;run:()=>void}
+/** The same grouped listbox is used in panels, dialogs and settings. */
+export class GroupedSelect {
+  readonly trigger:HTMLButtonElement;private label:HTMLElement;private icon:HTMLElement;private list:HTMLElement;private choices:HTMLElement;private footer:HTMLElement;
+  private options:SelectOption[]=[];private selected='';private active=0;private open=false;
+  private outside:(e:PointerEvent)=>void;private scroll:()=>void;private signature='';
+  private scope?:Scope;
+  private observer:ResizeObserver;private context:CanvasRenderingContext2D|null;
+  constructor(private root:HTMLElement,name:string,private change:(value:string)=>void,private app:App){
+    root.addClass('zs-grouped-select');const id='zs-select-'+crypto.randomUUID();
+    this.trigger=root.createEl('button',{cls:'zs-source-trigger zs-select-trigger',attr:{type:'button','aria-label':name,'aria-haspopup':'listbox','aria-expanded':'false','aria-controls':id}});
+    this.icon=this.trigger.createSpan('zs-source-icon');this.label=this.trigger.createSpan('zs-source-label');setIcon(this.trigger.createSpan('zs-source-chevron'),'chevron-down');
+    this.list=root.createDiv({cls:'zs-select-menu',attr:{id,role:'listbox','aria-label':name,popover:'manual'}});this.list.hidden=true;
+    this.choices=this.list.createDiv('zs-select-choices');this.footer=this.list.createDiv('zs-select-footer');this.footer.hidden=true;
+    this.trigger.onclick=()=>this.open?this.close():this.show();
+    this.trigger.onkeydown=e=>{if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();this.show();}};
+    this.list.onkeydown=e=>this.key(e);
+    this.outside=e=>{if(!this.root.contains(e.target as Node))this.close(false);};root.doc.addEventListener('pointerdown',this.outside);
+    this.scroll=()=>{if(this.open)this.position();};root.win.addEventListener('resize',this.scroll);root.doc.addEventListener('scroll',this.scroll,true);
+    this.context=root.doc.createElement('canvas').getContext('2d');this.observer=new ResizeObserver(()=>this.fitLabels());this.observer.observe(this.trigger);this.observer.observe(this.list);
+  }
+  setOptions(options:SelectOption[],value=this.selected):void{const signature=JSON.stringify(options);if(signature!==this.signature){this.signature=signature;this.options=options;this.choices.empty();let group:string|undefined;for(const [i,o] of options.entries()){if(o.group!==group){if(i)this.choices.createDiv({cls:'zs-select-divider',attr:{role:'separator'}});if(o.group)this.choices.createDiv({cls:'zs-select-group',text:o.group,attr:{role:'presentation'}});group=o.group;}const b=this.choices.createEl('button',{cls:'zs-source-option zs-select-option',attr:{role:'option',type:'button',tabindex:'-1','data-value':o.value,title:o.label}});setIcon(b.createSpan('zs-source-icon'),o.icon||'');b.createSpan({cls:'zs-source-label',text:o.label});setIcon(b.createSpan('zs-source-check'),'check');b.disabled=!!o.disabled;b.onclick=()=>{this.value=o.value;this.close();this.change(o.value);};b.onpointermove=()=>this.active=this.items().indexOf(b);}}this.value=value;}
+  setActions(actions:SelectAction[]):void{this.footer.empty();this.footer.hidden=!actions.length;for(const action of actions){const b=this.footer.createEl('button',{cls:'zs-source-option zs-select-action',attr:{role:'option',type:'button',tabindex:'-1','aria-selected':'false'}});setIcon(b.createSpan('zs-source-icon'),action.icon);b.createSpan({cls:'zs-source-label',text:action.label});b.onclick=()=>{this.close();action.run();};b.onpointermove=()=>this.active=this.items().indexOf(b);}}
+  private items():HTMLButtonElement[]{return [...this.list.querySelectorAll<HTMLButtonElement>('[role=option]')].filter(b=>!b.disabled);}
+  get value():string{return this.selected;}
+  set value(value:string){this.selected=value;const option=this.options.find(o=>o.value===value);this.label.dataset.fullTitle=option?.label||'请选择';this.label.setText(this.label.dataset.fullTitle);this.trigger.title=option?.label||'';this.icon.hidden=!option?.icon;if(option?.icon)setIcon(this.icon,option.icon);for(const b of this.choices.querySelectorAll<HTMLElement>('[role=option]')){const label=b.querySelector<HTMLElement>('.zs-source-label');if(label)label.dataset.fullTitle=this.options.find(o=>o.value===b.dataset.value)?.label||'';b.setAttribute('aria-selected',String(b.dataset.value===value));b.toggleClass('is-selected',b.dataset.value===value);}this.fitLabels();}
+  private fitLabels():void{const ctx=this.context;if(!ctx)return;for(const label of this.root.querySelectorAll<HTMLElement>('.zs-source-label[data-full-title]')){const width=label.clientWidth;if(!width)continue;const style=this.root.win.getComputedStyle(label);ctx.font=`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;const text=fitFilename(label.dataset.fullTitle||'',width,s=>ctx.measureText(s).width);if(label.textContent!==text)label.setText(text);}}
+  set disabled(value:boolean){this.trigger.disabled=value;if(value)this.close(false);}
+  private show():void{if(this.trigger.matches(':disabled')||!this.items().length||this.open)return;this.open=true;this.list.hidden=false;this.list.showPopover?.();this.trigger.setAttribute('aria-expanded','true');const parent=(this.app.keymap as unknown as {getWindowStack(win:Window):{scope:Scope}}).getWindowStack(this.root.win).scope;this.scope=new Scope(parent);this.scope.register([],'Escape',()=>{this.close();return false;});this.app.keymap.pushScope(this.scope);this.active=Math.max(0,this.items().findIndex(b=>b.dataset.value===this.selected));this.position();this.focus();}
+  private position():void{const r=this.trigger.getBoundingClientRect(),win=this.root.win;this.list.style.width=Math.max(220,r.width)+'px';this.list.style.maxHeight=Math.max(100,Math.min(360,win.innerHeight-24))+'px';const h=this.list.offsetHeight,w=this.list.offsetWidth;this.list.style.left=Math.max(8,Math.min(r.left,win.innerWidth-w-8))+'px';this.list.style.top=(r.bottom+h+6<win.innerHeight?r.bottom+4:Math.max(8,r.top-h-4))+'px';}
+  private focus():void{const b=this.items()[this.active];b?.focus({preventScroll:true});b?.scrollIntoView({block:'nearest'});}
+  private key(e:KeyboardEvent):void{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();this.close();return;}if(e.key==='Tab'){this.close(false);return;}const items=this.items();if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();e.stopPropagation();this.active=e.key==='Home'?0:e.key==='End'?items.length-1:(this.active+(e.key==='ArrowUp'?-1:1)+items.length)%items.length;this.focus();}else if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();items[this.active]?.click();}}
+  close(focus=true):void{if(!this.open)return;this.open=false;if(this.scope)this.app.keymap.popScope(this.scope);this.scope=undefined;this.list.hidePopover?.();this.list.hidden=true;this.trigger.setAttribute('aria-expanded','false');if(focus)this.trigger.focus();}
+  destroy():void{this.close(false);this.observer.disconnect();this.root.doc.removeEventListener('pointerdown',this.outside);this.root.win.removeEventListener('resize',this.scroll);this.root.doc.removeEventListener('scroll',this.scroll,true);}
+}

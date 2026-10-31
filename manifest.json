@@ -2,8 +2,8 @@
   "id": "zotsight",
   "name": "ZotSight",
   "version": "0.1.0",
-  "minAppVersion": "1.8.0",
-  "description": "把 Zotero 文献带进 Obsidian：PDF 阅读、批注与 Markdown 笔记。",
+  "minAppVersion": "1.11.4",
+  "description": "Zotero 文献阅读、Markdown 笔记、本地朗读与模块化文档翻译。",
   "author": "Napreth",
   "isDesktopOnly": true
 }

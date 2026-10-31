@@ -5,10 +5,18 @@ import { annotationIcon } from './annotation-icons';
 import {mergeTextRects,selectedTextRects} from './selection-geometry';
 import {ReflowView,readingSettings,type ReadingSettings,type ReadingAnchor} from './reflow';
 import type {ReflowLoader} from './reflow-processor';
+import type {ReadingTranslation} from './reading-api';
+import {LocalReadAloud,type SpeechSettings} from './read-aloud';
+import {speechDocument} from './speech-document';
+import type {StructuredDocumentText} from '../vendor/structured-document-text/schema';
+import type {ReadAloudSegment} from '../vendor/zotero-reader/common/types';
+import {getTextNodeSpans} from '../vendor/zotero-reader/common/sdt/position-mapper';
+import {sourceCharacters,normalizeSourceRect,mergeSourceRects} from './reflow-geometry';
+import {createHash} from 'node:crypto';
 
 export type AnnotationType='highlight'|'underline'|'note'|'area'|'text'|'ink';
 export interface Selection {text:string;rects:number[][];page:number;attachmentId?:string;type?:AnnotationType;color?:string;points?:number[][]}
-interface ReaderOptions {toolbar?:HTMLElement;onAnnotationChange?:(id:string)=>void;onDeleteAnnotation?:(id:string)=>void;onUndo?:(redo:boolean)=>void;reflowLoader?:ReflowLoader;reading?:unknown;onReadingChange?:(settings:ReadingSettings)=>void}
+interface ReaderOptions {onDocumentMenu?:(anchor:HTMLElement)=>void;speech?:SpeechSettings;onSpeechSettings?:(settings:SpeechSettings)=>void;toolbar?:HTMLElement;onAnnotationChange?:(id:string)=>void;onDeleteAnnotation?:(id:string)=>void;onUndo?:(redo:boolean)=>void;reflowLoader?:ReflowLoader;reading?:unknown;onReadingChange?:(settings:ReadingSettings)=>void;translations?:()=>ReadingTranslation[]}
 interface PageRecord {number:number;el:HTMLElement;width:number;height:number;rendered:boolean;version:number;task?:any;textTask?:any;promise?:Promise<void>}
 interface SearchHit {page:number;offset:number}
 export function button(parent:HTMLElement,icon:string,label:string,action:()=>void):HTMLButtonElement {
@@ -33,8 +41,14 @@ export class PDFReader {
   private wheelHost:HTMLElement;private wheelListener:(event:WheelEvent)=>void;private wheelTimer?:ReturnType<typeof setTimeout>;private wheelFrame?:number;private wheelTarget?:{zoom:number;x:number;y:number};
   private drag?:{record:PageRecord;x:number;y:number;box:HTMLElement;points?:number[][];path?:SVGPathElement};
   private reflow?:ReflowView;private reading:ReadingSettings;private readingMode=false;private readingButton?:HTMLButtonElement;private appearanceButton?:HTMLButtonElement;private appearance?:HTMLElement;private originalBytes?:Uint8Array;private body:HTMLElement;
+  private sourceHash='';private modeMenu=false;private loaded=false;private speech?:LocalReadAloud;private speechPaint=0;
   page=1;zoom=1;
-  get ready():boolean{return !!this.pdf;}
+  get ready():boolean{return this.loaded&&!this.disposed;}
+  get mode():'pdf'|'reading'{return this.readingMode?'reading':'pdf';}
+  get translationId():string|undefined{return this.readingMode?this.reading.translationId:undefined;}
+  async sourcePreview():Promise<string>{const pdf=this.pdf,version=this.documentVersion;if(!pdf)return '';const text:string[]=[];for(let i=1;i<=Math.min(2,pdf.numPages);i++){const page=await pdf.getPage(i),content=await page.getTextContent();if(this.disposed||version!==this.documentVersion)return '';text.push(content.items.map((item:any)=>item.str||'').join(' '));}return text.join('\n');}
+  stopSpeech():void{this.speech?.close();}
+  setDocumentMenu(enabled:boolean):void{this.modeMenu=enabled;if(!this.readingButton)return;this.readingButton.empty();setIcon(this.readingButton,'book-open');if(enabled)setIcon(this.readingButton.createSpan('zs-reading-chevron'),'chevron-down');const title=enabled?'文档切换':'阅读模式';this.readingButton.setAttribute('aria-label',title);this.readingButton.title=title;this.readingButton.setAttribute('aria-haspopup',enabled?'menu':'false');if(enabled)this.readingButton.removeAttribute('aria-pressed');else this.readingButton.setAttribute('aria-pressed',String(this.readingMode));}
 
   constructor(private root:HTMLElement,private onState:(page:number,zoom:number)=>void,private onHighlight:(selection:Selection)=>void,private onQuote:(selection:Selection)=>void,private annotations:()=>Annotation[],private options:ReaderOptions={}) {
     this.reading=readingSettings(options.reading);
@@ -44,8 +58,8 @@ export class PDFReader {
     this.toolbar.prepend(navigation);
     this.navButton=button(navigation,'panel-left','显示或隐藏导航栏',()=>this.toggleNavigation());
     this.navButton.setAttribute('aria-pressed','false');this.separator();
-    const zoom=this.toolbar.createDiv('zs-toolbar-group');
-    button(zoom,'zoom-out','缩小',()=>void this.setZoom(this.zoom/1.15));button(zoom,'zoom-in','放大',()=>void this.setZoom(this.zoom*1.15));
+    const mode=this.toolbar.createDiv('zs-toolbar-group zs-reading-controls');
+    if(options.reflowLoader){this.readingButton=button(mode,'book-open','阅读模式',()=>{if(this.modeMenu)this.options.onDocumentMenu?.(this.readingButton!);else void this.toggleReadingMode();});this.readingButton.setAttribute('aria-pressed','false');button(mode,'headphones','本地朗读',()=>void this.openSpeech());}
     this.separator();const pages=this.toolbar.createDiv('zs-toolbar-group zs-page-controls');
     button(pages,'chevron-up','上一页',()=>void this.go(this.page-1));button(pages,'chevron-down','下一页',()=>void this.go(this.page+1));
     this.pageInput=pages.createEl('input',{type:'number',value:'1',attr:{'aria-label':'页码',min:'1'}});this.pageInput.onchange=()=>void this.go(Number(this.pageInput.value));
@@ -55,7 +69,7 @@ export class PDFReader {
     for(const [id,label] of [['highlight','高亮'],['underline','下划线'],['note','便笺'],['text','文字批注'],['area','区域批注'],['ink','手绘']] as const){const b=button(tools,'',label,()=>this.setTool(this.tool===id?'select':id));annotationIcon(b,id);this.toolButtons.set(id,b);}
     this.colorButton=button(tools,'','批注颜色',()=>{this.palette.hidden=!this.palette.hidden;});this.colorButton.createSpan('zs-color-swatch');setIcon(this.colorButton.createSpan('zs-color-chevron'),'chevron-down');this.colorButton.style.setProperty('--zs-annotation-color',this.color);this.colorButton.addClass('zs-color-button');
     this.separator();const end=this.toolbar.createDiv('zs-toolbar-group');
-    if(options.reflowLoader){this.readingButton=button(end,'book-open','阅读模式',()=>void this.toggleReadingMode());this.readingButton.setAttribute('aria-pressed','false');this.appearanceButton=button(end,'','阅读外观',()=>{if(this.appearance)this.appearance.hidden=!this.appearance.hidden;});this.appearanceButton.setText('Aa');this.appearanceButton.hidden=true;}
+    if(options.reflowLoader){this.appearanceButton=button(end,'','阅读外观',()=>{if(this.appearance)this.appearance.hidden=!this.appearance.hidden;});this.appearanceButton.setText('Aa');this.appearanceButton.hidden=true;}
     this.zoomLabel=end.createSpan({cls:'zs-zoom-label',text:'100%'});button(end,'search','在 PDF 中查找',()=>this.openFind());
     this.findBar=root.createDiv('zs-find-bar');this.findBar.hidden=true;
     this.findInput=this.findBar.createEl('input',{type:'search',attr:{'aria-label':'在 PDF 中查找',placeholder:'在文档中查找…'}});this.findInput.oninput=()=>{clearTimeout(this.findTimer);this.searchVersion++;this.findTimer=setTimeout(()=>void this.search(this.findInput.value),180);};
@@ -77,7 +91,13 @@ export class PDFReader {
     this.toolbarNodes=Array.from(this.toolbar.children).filter(el=>!existing.has(el));
   }
 
+  private async openSpeech():Promise<void>{if(!this.ready||!this.originalBytes||!this.options.reflowLoader)return;if(!this.speech)this.speech=new LocalReadAloud(this.root,async signal=>{const structure=await this.options.reflowLoader!(Uint8Array.from(this.originalBytes!),signal,()=>{});return speechDocument(structure,this.readingMode?this.activeTranslation():null);},(structure,segment)=>void this.paintSpeech(structure,segment),this.options.speech,settings=>{this.options.speech=settings;this.options.onSpeechSettings?.(settings);},()=>this.page);await this.speech.show();}
+  private async paintSpeech(structure:StructuredDocumentText|null,segment:ReadAloudSegment|null):Promise<void>{const version=++this.speechPaint;this.root.querySelectorAll('.zs-speech-overlay').forEach(el=>el.remove());this.reflow?.setSpeechBlocks([]);if(!structure||!segment||this.disposed)return;const spans=getTextNodeSpans(structure,segment.position);if(this.readingMode){this.reflow?.setSpeechBlocks([...new Set(spans.map(span=>span.blockRef.join('.')))]);return;}const pages=new Map<number,number[][]>();for(const span of spans){const chars=sourceCharacters(structure,span.blockRef.join('.'),span.ref.at(-1));for(const char of chars.slice(span.start,span.end)){if(!char.page||!char.rect)continue;const list=pages.get(char.page)||[];list.push(char.rect);pages.set(char.page,list);}}const first=pages.keys().next().value;if(first&&first!==this.page)await this.go(first);if(version!==this.speechPaint||this.disposed)return;for(const [page,rects] of pages){const record=this.records[page-1];if(!record)continue;const source=await this.pdf.getPage(page),viewport=source.getViewport({scale:1});if(version!==this.speechPaint||this.disposed)return;const overlay=record.el.createDiv('zs-speech-overlay');for(const rect of mergeSourceRects(rects.map(r=>normalizeSourceRect(r,viewport)))){const el=overlay.createDiv();el.style.left=rect[0]*100+'%';el.style.top=rect[1]*100+'%';el.style.width=rect[2]*100+'%';el.style.height=rect[3]*100+'%';}}}
   private separator():void{this.toolbar.createDiv('zs-toolbar-separator');}
+  private availableTranslations():ReadingTranslation[]{return (this.options.translations?.()||[]).filter(t=>t.sourceHash===this.sourceHash);}
+  private activeTranslation():ReadingTranslation|null{return this.availableTranslations().find(t=>t.id===this.reading.translationId)||null;}
+  refreshTranslations():void{const active=this.activeTranslation();this.reflow?.setTranslation(active);for(const [id,b] of this.toolButtons){b.hidden=this.readingMode&&(!!active||['text','area','ink'].includes(id));b.disabled=b.hidden;b.title=this.readingMode&&active?'在原文视图中添加精确批注':b.getAttribute('aria-label')||'';}this.colorButton.hidden=this.readingMode&&!!active;if(active&&this.readingMode)this.setTool('select');}
+  async showReadingTranslation(id:string|null):Promise<void>{if(id&&!this.availableTranslations().some(t=>t.id===id))throw Error('译文与当前 PDF 不匹配。');this.speech?.destroy();this.speech=undefined;this.closeFind(false);if(id)this.reading.translationId=id;else delete this.reading.translationId;await this.toggleReadingMode(true);this.refreshTranslations();this.options.onReadingChange?.({...this.reading});}
   private pdfAnchor():ReadingAnchor{const record=this.records.find(r=>r.el.offsetTop+r.el.clientHeight>this.scroll.scrollTop+24)||this.records[this.page-1];return {page:record?.number||this.page,x:this.reading.x,y:record?Math.max(0,Math.min(1,(this.scroll.scrollTop-record.el.offsetTop+24)/Math.max(1,record.el.clientHeight))):0};}
   private updateReadingPosition(y:number,x=this.reading.x):void{if(Math.abs(this.reading.y-y)<.002&&Math.abs(this.reading.x-x)<.002)return;this.reading.y=y;this.reading.x=x;this.options.onReadingChange?.({...this.reading});}
   private changeReadingSize(size:number):void{this.reading.size=Math.max(14,Math.min(32,size));this.appearance?.querySelector<HTMLElement>('.zs-reading-size-value')?.setText(String(this.reading.size));this.reflow?.applySettings(this.reading);this.zoomLabel.setText(`${Math.round(this.reading.size/20*100)}%`);this.options.onReadingChange?.({...this.reading});}
@@ -89,10 +109,10 @@ export class PDFReader {
   }
   async toggleReadingMode(force?:boolean):Promise<void>{
     if(!this.pdf||!this.options.reflowLoader||!this.originalBytes||this.disposed)return;
-    const enabled=force??!this.readingMode;if(enabled===this.readingMode)return;
+    const enabled=force??!this.readingMode;if(enabled===this.readingMode){this.reading.mode=enabled?'reflow':'pdf';return;}this.speech?.destroy();this.speech=undefined;
     const anchor=this.readingMode?this.reflow?.anchor()||{page:this.page,y:this.reading.y,x:this.reading.x}:this.reading.mode==='reflow'?{page:this.page,y:this.reading.y,x:this.reading.x}:this.pdfAnchor();
     this.closeFind(false);this.root.win.getSelection()?.removeAllRanges();this.setTool('select');this.readingMode=enabled;this.reading.mode=enabled?'reflow':'pdf';this.reading.y=anchor.y;this.reading.x=anchor.x||0;
-    this.readingButton?.setAttribute('aria-pressed',String(enabled));this.readingButton?.toggleClass('is-active',enabled);if(this.appearanceButton)this.appearanceButton.hidden=!enabled;if(this.appearance)this.appearance.hidden=true;
+    if(!this.modeMenu)this.readingButton?.setAttribute('aria-pressed',String(enabled));this.readingButton?.toggleClass('is-active',enabled);if(this.appearanceButton)this.appearanceButton.hidden=!enabled;if(this.appearance)this.appearance.hidden=true;
     for(const id of ['text','area','ink']){const b=this.toolButtons.get(id);if(b){b.disabled=enabled;b.title=enabled?'此工具用于原 PDF 版面':b.getAttribute('aria-label')||'';}}
     this.scroll.hidden=enabled;this.root.toggleClass('zs-reading-mode',enabled);this.options.onReadingChange?.({...this.reading});
     if(enabled){
@@ -101,10 +121,10 @@ export class PDFReader {
         const scroll=this.reflow.scroll;scroll.addEventListener('mouseup',()=>this.captureSelection());scroll.addEventListener('keyup',()=>this.captureSelection());scroll.addEventListener('contextmenu',event=>this.selectionMenu(event));scroll.addEventListener('pointerdown',event=>{if(this.tool==='note'){event.preventDefault();const note=this.reflow?.noteAt(event.clientX,event.clientY);if(note){this.onHighlight({...note,color:this.color});this.drawAnnotations();this.openAnnotations(this.annotations().at(-1)?.id);}}else if(!(event.target as Element)?.closest('a,button'))scroll.focus({preventScroll:true});});
       }
       this.createAppearance();this.zoomLabel.setText(`${Math.round(this.reading.size/20*100)}%`);
-      try{await this.reflow.show(anchor);}catch{} // The reading surface displays the recoverable error.
-    }else{this.reflow?.hide();await this.go(anchor.page);if(this.disposed)return;const record=this.records[anchor.page-1];if(record)this.scroll.scrollTop=Math.max(0,record.el.offsetTop+anchor.y*record.el.clientHeight-24);this.sizePages();this.drawAnnotations();this.scroll.focus();}
+      this.reflow.setTranslation(this.activeTranslation());try{await this.reflow.show(anchor);this.refreshTranslations();}catch{} // The reading surface displays the recoverable error.
+    }else{for(const b of this.toolButtons.values()){b.disabled=false;b.hidden=false;b.title=b.getAttribute('aria-label')||'';}this.colorButton.hidden=false;this.reflow?.hide();await this.go(anchor.page);if(this.disposed)return;const record=this.records[anchor.page-1];if(record)this.scroll.scrollTop=Math.max(0,record.el.offsetTop+anchor.y*record.el.clientHeight-24);this.sizePages();this.drawAnnotations();this.scroll.focus();}
   }
-  private setTool(tool:'select'|AnnotationType):void{if(this.selections().length)this.root.win.getSelection()?.removeAllRanges();this.tool=tool;for(const [id,b] of this.toolButtons){b.toggleClass('is-active',id===tool);b.setAttribute('aria-pressed',String(id===tool));}this.root.dataset.tool=tool;this.hideSelection();}
+  private setTool(tool:'select'|AnnotationType):void{if(this.readingMode&&this.activeTranslation()&&tool!=='select')return;if(this.selections().length)this.root.win.getSelection()?.removeAllRanges();this.tool=tool;for(const [id,b] of this.toolButtons){b.toggleClass('is-active',id===tool);b.setAttribute('aria-pressed',String(id===tool));}this.root.dataset.tool=tool;this.hideSelection();}
   handleShortcut(event:KeyboardEvent):boolean|undefined{
     if(this.disposed||!this.pdf||event.defaultPrevented)return;
     const target=event.target instanceof Element?event.target:null;const field=target?.closest('input,textarea,[contenteditable="true"]');const editable=field&&(this.root.contains(field)||this.toolbar.contains(field));
@@ -124,8 +144,8 @@ export class PDFReader {
   private renderNavTabs():void{this.navTabs.empty();for(const [id,icon,label] of [['thumbnails','layout-grid','页面缩略图'],['annotations','messages-square','批注列表'],['outline','list-tree','文档目录']] as const){const b=button(this.navTabs,icon,label,()=>{this.navMode=id;this.renderNavTabs();void this.renderNavigation();});b.setAttribute('role','tab');b.setAttribute('aria-selected',String(id===this.navMode));b.toggleClass('is-active',id===this.navMode);}}
 
   async load(data:Uint8Array,page=1,zoom=1):Promise<void>{
-    const version=++this.documentVersion;this.disposed=false;this.scroll.setText('正在加载 PDF…');
-    if(this.options.reflowLoader)this.originalBytes=Uint8Array.from(data);this.lib=await loadPdfJs();if(version!==this.documentVersion)return;
+    const version=++this.documentVersion;this.disposed=false;this.loaded=false;this.scroll.setText('正在加载 PDF…');
+    this.sourceHash=createHash('md5').update(data).digest('hex');if(this.options.reflowLoader)this.originalBytes=Uint8Array.from(data);this.lib=await loadPdfJs();if(version!==this.documentVersion)return;
     this.loading=this.lib.getDocument({data,isEvalSupported:false});const pdf=await this.loading.promise;
     if(version!==this.documentVersion){await pdf.destroy();return;}
     this.pdf=pdf;const first=await pdf.getPage(1);const viewport=first.getViewport({scale:1});this.base={width:viewport.width,height:viewport.height};
@@ -135,7 +155,7 @@ export class PDFReader {
     this.layoutPages();
     this.pageObserver=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting)this.enqueue(Number((entry.target as HTMLElement).dataset.page));},{root:this.scroll,rootMargin:'900px 0px'});for(const record of this.records)this.pageObserver.observe(record.el);
     void pdf.getOutline().then((outline:any[])=>{if(version===this.documentVersion){this.outline=outline||[];if(this.navMode==='outline')void this.renderNavigation();}}).catch(()=>{});
-    await this.renderNavigation();await this.go(this.page);this.onState(this.page,this.zoom);if(this.reading.mode==='reflow')await this.toggleReadingMode(true);
+    await this.renderNavigation();await this.go(this.page);this.onState(this.page,this.zoom);if(this.reading.mode==='reflow')await this.toggleReadingMode(true);this.loaded=true;
   }
 
   private layoutPages():void{
@@ -211,6 +231,7 @@ export class PDFReader {
   }
 
   private selections():Selection[]{
+    if(this.readingMode&&this.activeTranslation())return [];
     if(this.readingMode)return this.reflow?.selections()||[];const selected=this.root.win.getSelection();if(!selected?.rangeCount||selected.isCollapsed)return [];const range=selected.getRangeAt(0);const selections:Selection[]=[];
     for(const record of this.records){const layer=record.el.querySelector<HTMLElement>('.textLayer');if(!layer||!range.intersectsNode(layer))continue;const piece=range.cloneRange(),contents=this.root.doc.createRange();contents.selectNodeContents(layer);
       if(piece.compareBoundaryPoints(Range.START_TO_START,contents)<0)piece.setStart(layer,0);if(piece.compareBoundaryPoints(Range.END_TO_END,contents)>0)piece.setEnd(layer,layer.childNodes.length);
@@ -272,5 +293,5 @@ export class PDFReader {
     const matches=this.hits.filter(h=>h.page===record.number),length=normalizePDFText(this.findInput.value).length,current=this.hits[this.hitIndex];let offset=0;
     for(const span of spans){const end=offset+normalizePDFText(span.textContent||'').length;if(matches.some(m=>m.offset<end&&m.offset+length>offset))span.addClass('zs-search-hit');if(current?.page===record.number&&current.offset<end&&current.offset+length>offset)span.addClass('zs-search-current');offset=end;}
   }
-  async destroy():Promise<void>{this.disposed=true;this.reflow?.destroy();this.reflow=undefined;this.originalBytes=undefined;this.documentVersion++;this.layoutVersion++;this.searchVersion++;this.pageObserver?.disconnect();this.thumbnailObserver?.disconnect();this.root.doc.removeEventListener('selectionchange',this.selectionListener);this.wheelHost.removeEventListener('wheel',this.wheelListener);clearTimeout(this.wheelTimer);if(this.wheelFrame!==undefined)this.root.win.cancelAnimationFrame(this.wheelFrame);if(this.selectionFrame!==undefined)this.root.win.cancelAnimationFrame(this.selectionFrame);this.toolbarNodes.forEach(el=>el.remove());this.toolbarNodes=[];clearTimeout(this.findTimer);clearTimeout(this.scrollTimer);this.queue.clear();this.cancelDrag();for(const record of this.records){record.task?.cancel();record.textTask?.cancel?.();}for(const task of this.thumbnailTasks)task.cancel();await this.loading?.destroy?.();this.pdf=null;this.records=[];this.thumbnails.clear();this.textCache.clear();this.root.closest<HTMLElement>('.zs-reader-pane')?.style.removeProperty('--zs-nav-width');}
+  async destroy():Promise<void>{this.disposed=true;this.loaded=false;this.speech?.destroy();this.speech=undefined;this.reflow?.destroy();this.reflow=undefined;this.originalBytes=undefined;this.documentVersion++;this.layoutVersion++;this.searchVersion++;this.pageObserver?.disconnect();this.thumbnailObserver?.disconnect();this.root.doc.removeEventListener('selectionchange',this.selectionListener);this.wheelHost.removeEventListener('wheel',this.wheelListener);clearTimeout(this.wheelTimer);if(this.wheelFrame!==undefined)this.root.win.cancelAnimationFrame(this.wheelFrame);if(this.selectionFrame!==undefined)this.root.win.cancelAnimationFrame(this.selectionFrame);this.toolbarNodes.forEach(el=>el.remove());this.toolbarNodes=[];clearTimeout(this.findTimer);clearTimeout(this.scrollTimer);this.queue.clear();this.cancelDrag();for(const record of this.records){record.task?.cancel();record.textTask?.cancel?.();}for(const task of this.thumbnailTasks)task.cancel();await this.loading?.destroy?.();this.pdf=null;this.records=[];this.thumbnails.clear();this.textCache.clear();this.root.closest<HTMLElement>('.zs-reader-pane')?.style.removeProperty('--zs-nav-width');}
 }

@@ -11,10 +11,12 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "eld": "^2.0.2",
     "esbuild": "^0.25.0",
     "fflate": "^0.8.2",
     "obsidian": "latest",
     "playwright": "^1.64.1",
+    "sentencex-ts": "^0.1.13-ts",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },

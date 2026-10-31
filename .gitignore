@@ -5,3 +5,6 @@ qa-vault/
 qa-profile/
 test-results/
 .research/
+__pycache__/
+*.pyc
+!vendor/upstream-sources/tts-libraries/sentencex-ts/dist/

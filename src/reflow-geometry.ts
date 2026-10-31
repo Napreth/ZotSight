@@ -4,8 +4,8 @@ import {getBlockText} from '../vendor/structured-document-text/src/pdf/block.js'
 import {mergeTextRects} from './selection-geometry';
 
 export interface SourceChar {page:number;rect:number[]|null}
-export function sourceCharacters(structure:StructuredDocumentText,ref:string,index:number):SourceChar[]{
-  const mapped=getBlockText(structure,[...ref.split('.').map(Number),index]);
+export function sourceCharacters(structure:StructuredDocumentText,ref:string,index?:number):SourceChar[]{
+  const path=ref.split('.').map(Number);if(index!==undefined)path.push(index);const mapped=getBlockText(structure,path);
   return mapped.rects.map((rect:number[]|null,i:number)=>({page:mapped.pageIndexes[i]===null?0:mapped.pageIndexes[i]+1,rect}));
 }
 export function normalizeSourceRect(rect:number[],viewport:{convertToViewportRectangle:(rect:number[])=>number[];width:number;height:number}):number[]{

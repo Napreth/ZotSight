@@ -98,14 +98,16 @@ export class PDFModal extends Modal {
   }
 }
 export class ZotSightSettings extends PluginSettingTab {
+  private moduleCleanup?:()=>void;
+  hide():void{this.moduleCleanup?.();this.moduleCleanup=undefined;}
   constructor(app:App,private plugin:ZotSightPlugin){super(app,plugin);}
   display():void{
-    const el=this.containerEl;el.empty();el.createEl('h2',{text:'ZotSight'});
+    this.moduleCleanup?.();const el=this.containerEl;el.empty();el.createEl('h2',{text:'ZotSight'});
     new Setting(el).setName('Zotero 本地 API').setDesc('在 Zotero 设置 → 高级中允许其他应用通信。无需 API Key。').addText(t=>t.setValue(this.plugin.settings.apiBase).onChange(v=>{this.plugin.settings.apiBase=v.trim();void this.plugin.saveSettings();}));
     new Setting(el).setName('连接测试').addButton(b=>b.setButtonText('测试连接').onClick(()=>run(async()=>{await this.plugin.client.search('',0);new Notice('已连接 Zotero。');})));
     new Setting(el).setName('默认文献库').addDropdown(d=>d.addOption('user','个人库').addOption('group','群组库').setValue(this.plugin.settings.libraryType).onChange(v=>{this.plugin.settings.libraryType=v as 'user'|'group';void this.plugin.saveSettings();}));
     new Setting(el).setName('Library ID').setDesc('个人本机库使用 0，群组库填写数字 ID。').addText(t=>t.setValue(this.plugin.settings.libraryId).onChange(v=>{this.plugin.settings.libraryId=v.trim();void this.plugin.saveSettings();}));
     new Setting(el).setName('新文献文件夹').addText(t=>t.setValue(this.plugin.settings.folder).onChange(v=>{this.plugin.settings.folder=v.trim();void this.plugin.saveSettings();}));
-    el.createEl('p',{cls:'zs-muted',text:'批注与笔记保存在 .zsseed 中；Zotero 仅作为只读数据源。ZSIndex 和 ZSTranslate 可通过扩展 API 接入。'});
+    el.createEl('p',{cls:'zs-muted',text:'笔记、批注和文档翻译保存在 .zslp 文献包中。书目标题与文件名分别保存。'});this.moduleCleanup=this.plugin.documentTranslation?.renderSettings(el);
   }
 }

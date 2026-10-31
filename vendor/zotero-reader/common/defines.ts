@@ -1,0 +1,1 @@
+export const READ_ALOUD_SEGMENT_MAX_LENGTH=5000;

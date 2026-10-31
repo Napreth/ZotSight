@@ -27,3 +27,13 @@ npm run build
 Copy the contents of its `build/` directory into `vendor/zotero-document-worker/`, preserving the `COPYING` notice, and rebuild ZotSight. No ZotSight patches are applied to the native worker. The upstream scripts copy the ONNX models and ONNX Runtime WASM into the build output. The model weights are included in the upstream source tree.
 
 `python scripts/prepare-zotero-sources.py` can fetch the same pinned source and license notices again. It omits upstream test PDFs and demo documents; all source and build files used by the distributed processor are retained. Dependency versions and integrity values are recorded in the upstream package lock.
+
+## Document translation and local speech
+
+The translation module is built into `main.js`. Its Python helpers and pinned dependency lists ship under `modules/document-translation/backend/`; Python environments and jobs are created at runtime and are excluded from distribution archives. Backend tests can be run with an environment containing the base dependencies:
+
+```sh
+python -m unittest discover -s modules/document-translation/backend -p "test_*.py"
+```
+
+Local speech uses the pinned Zotero reader sources together with sentencex-ts and eld. The source archive includes the upstream voice/segmentation code, the adapted host copies, both library source distributions and their licenses. No cloud TTS engine or voice model is required.

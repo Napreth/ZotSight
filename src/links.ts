@@ -19,20 +19,23 @@ export class LiteratureLinks extends Component {
   onload():void{
     const {app}=this.plugin;const m=app.metadataCache as any;
     if(typeof m.computeMetadataAsync!=='function'||typeof m.resolveLinks!=='function'||!m.linkUpdaters)return;
-    const original=m.getCache;const self=this;
+    const original=m.getCache,cachedFiles=m.getCachedFiles;const self=this;
     function getCache(this:unknown,path:string){return self.entries.get(path)?.cache||original.call(this,path);}
     m.getCache=getCache;this.register(()=>{if(m.getCache===getCache)m.getCache=original;});
-    const previous=m.linkUpdaters.zsseed;
+    function getCachedFiles(this:unknown){return [...new Set<string>([...cachedFiles.call(this),...self.entries.keys()])];}
+    m.getCachedFiles=getCachedFiles;this.register(()=>{if(m.getCachedFiles===getCachedFiles)m.getCachedFiles=cachedFiles;});
+    this.installLinkNames();
+    const previous={zslp:m.linkUpdaters.zslp,zsseed:m.linkUpdaters.zsseed};
     const updater={iterateReferences:(callback:(path:string,ref:Ref)=>void)=>{for(const [path,entry] of this.entries)for(const ref of this.refs(entry.cache))callback(path,ref);},iterateReferencesForFile:(path:string,callback:(ref:Ref)=>void)=>{const e=this.entries.get(path);if(e)for(const ref of this.refs(e.cache))callback(ref);},applyUpdates:(file:TFile,updates:Update[])=>this.applyUpdates(file,updates)};
-    m.linkUpdaters.zsseed=updater;this.register(()=>{if(m.linkUpdaters.zsseed===updater){if(previous)m.linkUpdaters.zsseed=previous;else delete m.linkUpdaters.zsseed;}});
-    const index=(f:unknown)=>{if(f instanceof TFile&&f.extension==='zsseed')this.queue(f);else this.schedule();};
+    for(const ext of ['zslp','zsseed'] as const){m.linkUpdaters[ext]=updater;this.register(()=>{if(m.linkUpdaters[ext]===updater){if(previous[ext])m.linkUpdaters[ext]=previous[ext];else delete m.linkUpdaters[ext];}});}
+    const index=(f:unknown)=>{if(f instanceof TFile&&['zslp','zsseed'].includes(f.extension))this.queue(f);else this.schedule();};
     this.registerEvent(app.vault.on('create',index));this.registerEvent(app.vault.on('modify',index));
     this.registerEvent(app.vault.on('delete',f=>{for(const path of this.entries.keys())if(path===f.path||path.startsWith(f.path+'/')){this.entries.delete(path);this.versions.set(path,(this.versions.get(path)||0)+1);delete m.resolvedLinks[path];delete m.unresolvedLinks[path];}this.schedule();}));
-    this.registerEvent(app.vault.on('rename',(f,old)=>{for(const path of this.entries.keys())if(path===old||path.startsWith(old+'/')){this.entries.delete(path);this.versions.set(path,(this.versions.get(path)||0)+1);delete m.resolvedLinks[path];delete m.unresolvedLinks[path];}for(const file of app.vault.getFiles())if(file.extension==='zsseed'&&(file===f||file.path.startsWith(f.path+'/')))void this.index(file);this.schedule();}));
+    this.registerEvent(app.vault.on('rename',(f,old)=>{for(const path of this.entries.keys())if(path===old||path.startsWith(old+'/')){this.entries.delete(path);this.versions.set(path,(this.versions.get(path)||0)+1);delete m.resolvedLinks[path];delete m.unresolvedLinks[path];}for(const file of app.vault.getFiles())if(['zslp','zsseed'].includes(file.extension)&&(file===f||file.path.startsWith(f.path+'/')))void this.index(file);this.schedule();}));
     this.registerEvent(m.on('resolved',()=>{if(!this.resolving){this.resolve();this.refreshGraphs();}}));
     this.registerEvent(app.workspace.on('layout-change',()=>this.refreshGraphs()));
     this.register(this.plugin.api.on('literature-change',context=>{if(context){const f=app.vault.getFileByPath(context.path);if(f)this.queue(f,context.seed.note);}}));
-    void Promise.all(app.vault.getFiles().filter(f=>f.extension==='zsseed').map(f=>this.index(f))).then(()=>{if(!this.stopped)this.schedule();});
+    void Promise.all(app.vault.getFiles().filter(f=>['zslp','zsseed'].includes(f.extension)).map(f=>this.index(f))).then(()=>{if(!this.stopped)this.schedule();});
     this.refreshGraphs();
   }
   private refs(cache:CachedMetadata):Ref[]{return [...(cache.links||[]),...(cache.embeds||[]),...(cache.frontmatterLinks||[])];}
@@ -40,7 +43,7 @@ export class LiteratureLinks extends Component {
   private async index(file:TFile,note?:string):Promise<void>{
     const path=file.path,version=(this.versions.get(path)||0)+1;this.versions.set(path,version);
     try{
-      if(note===undefined)note=parseSeed(await this.plugin.app.vault.read(file)).note;
+      if(note===undefined)note=(await this.plugin.store.read(file)).seed().note;
       if(this.stopped||file.path!==path||version!==this.versions.get(path))return;
       if(this.entries.get(path)?.note===note)return;
       const bytes=new TextEncoder().encode(note);const cache=await (this.plugin.app.metadataCache as any).computeMetadataAsync(bytes.buffer);
@@ -49,13 +52,31 @@ export class LiteratureLinks extends Component {
     }catch{if(version===this.versions.get(path)){this.entries.delete(path);delete this.plugin.app.metadataCache.resolvedLinks[path];delete this.plugin.app.metadataCache.unresolvedLinks[path];this.schedule();}}
   }
   private schedule():void{if(this.stopped)return;clearTimeout(this.timer);this.timer=setTimeout(()=>{this.resolve();this.resolving=true;try{(this.plugin.app.metadataCache as any).trigger('resolved');}finally{this.resolving=false;}this.refreshGraphs();},80);}
-  private resolve():void{const m=this.plugin.app.metadataCache as any;for(const path of this.entries.keys())if(this.plugin.app.vault.getFileByPath(path))m.resolveLinks(path);}
+  private resolve():void{const m=this.plugin.app.metadataCache as any;for(const path of this.entries.keys())if(this.plugin.app.vault.getFileByPath(path))m.resolveLinks(path);for(const [path,links] of Object.entries<Record<string,number>>(m.unresolvedLinks))if(path.endsWith('.md')&&Object.keys(links).some(link=>m.getFirstLinkpathDest(link,path)?.extension==='zslp'))m.resolveLinks(path);}
   private async applyUpdates(file:TFile,updates:Update[]):Promise<void>{
     const change=(note:string)=>applyNoteLinkUpdates(note,updates);
     const open=this.plugin.app.workspace.getLeavesOfType('zotsight-literature').map(l=>l.view as any).find(v=>v.file?.path===file.path&&v.seed);
     if(open){const current=parseSeed(open.getViewData()).note;const note=change(current);if(note!==current){open.setNote(note);await open.save();}}
-    else await this.plugin.app.vault.process(file,text=>{const seed=parseSeed(text);const note=change(seed.note);if(note===seed.note)return text;seed.note=note;seed.updatedAt=new Date().toISOString();return serializeSeed(seed);});
+    else{const seed=await this.plugin.readSeed(file.path);const note=change(seed.note);if(note!==seed.note)await this.plugin.api.updateNotes(file.path,note);}
     await this.index(file);
+  }
+  private installLinkNames():void{
+    const m=this.plugin.app.metadataCache as any,original=m.getLinkpathDest,text=m.fileToLinktext;
+    function resolve(this:any,path:string,source:string){const found=original.call(this,path,source);if(found?.length)return found;if(/\.zsseed$/i.test(path))return original.call(this,path.replace(/\.zsseed$/i,'.zslp'),source);if(/\.zslp$/i.test(path))return found;const packages=original.call(this,path+'.zslp',source);return packages?.length?packages:original.call(this,path+'.zsseed',source);}
+    function linktext(this:any,file:TFile,source:string,omit?:boolean){const result=text.call(this,file,source,omit);if(!['zslp','zsseed'].includes(file.extension))return result;const short=result.replace(/\.(zslp|zsseed)$/i,'');return this.getFirstLinkpathDest(short,source)===file?short:result;}
+    m.getLinkpathDest=resolve;m.fileToLinktext=linktext;
+    this.register(()=>{if(m.getLinkpathDest===resolve)m.getLinkpathDest=original;if(m.fileToLinktext===linktext)m.fileToLinktext=text;});
+    const manager=this.plugin.app.fileManager,generate=manager.generateMarkdownLink;
+    const generateLink:typeof generate=(file,source,subpath,alias)=>generate.call(manager,file,source,subpath,['zslp','zsseed'].includes(file.extension)?alias||file.basename:alias);
+    manager.generateMarkdownLink=generateLink;this.register(()=>{if(manager.generateMarkdownLink===generateLink)manager.generateMarkdownLink=generate;});
+  }
+  private graphNodes=new Map<any,()=>void>();
+  private updateGraphLabels(renderer:any):void{
+    for(const node of renderer.nodes||[]){if(!/\.(zslp|zsseed)$/i.test(node.id)||this.graphNodes.has(node))continue;
+      const original=node.getDisplayText;node.getDisplayText=()=>node.id.split('/').pop().replace(/\.(zslp|zsseed)$/i,'');if(node.text)node.text.text=node.getDisplayText();
+      this.graphNodes.set(node,()=>{node.getDisplayText=original;if(node.text)node.text.text=original.call(node);});
+    }renderer.changed?.();
+    for(const node of this.graphNodes.keys())if(!renderer.nodes?.includes(node)&&node.renderer===renderer)this.graphNodes.delete(node);
   }
   private refreshGraphs():void{
     if(this.stopped)return;const workspace=this.plugin.app.workspace;
@@ -68,10 +89,10 @@ export class LiteratureLinks extends Component {
           const options=this.options,attachments=options.showAttachments,renderer=this.renderer,setData=renderer.setData;
           options.showAttachments=true;
           renderer.setData=function(data:any){
-            if(data?.nodes){for(const [path,node] of Object.entries<any>(data.nodes)){if(path.endsWith('.zsseed')){if(node.type==='attachment')node.type='';}else if(!attachments&&node.type==='attachment')delete data.nodes[path];}
+            if(data?.nodes){for(const [path,node] of Object.entries<any>(data.nodes)){if(/\.(zslp|zsseed)$/i.test(path)){if(node.type==='attachment')node.type='';}else if(!attachments&&node.type==='attachment')delete data.nodes[path];}
               for(const node of Object.values<any>(data.nodes))for(const target of Object.keys(node.links||{}))if(!data.nodes[target])delete node.links[target];
               if(!options.showOrphans){const connected=new Set<string>();for(const [path,node] of Object.entries<any>(data.nodes))for(const target of Object.keys(node.links||{}))if(path!==target){connected.add(path);connected.add(target);}for(const path of Object.keys(data.nodes))if(!connected.has(path))delete data.nodes[path];}}
-            return setData.call(this,data);
+            const result=setData.call(this,data);self.updateGraphLabels(this);return result;
           };
           try{return render.apply(this,args);}finally{options.showAttachments=attachments;renderer.setData=setData;}
         }
@@ -81,5 +102,5 @@ export class LiteratureLinks extends Component {
     }
     for(const [engine,restore] of this.graphs)if(!engine.view?.containerEl?.isConnected){restore();this.graphs.delete(engine);}
   }
-  onunload():void{this.stopped=true;clearTimeout(this.timer);for(const timer of this.pending.values())clearTimeout(timer);this.pending.clear();for(const restore of this.graphs.values())restore();this.graphs.clear();const m=this.plugin.app.metadataCache;for(const path of this.entries.keys()){delete m.resolvedLinks[path];delete m.unresolvedLinks[path];}this.entries.clear();setTimeout(()=>{(m as any).trigger('resolved');},0);}
+  onunload():void{this.stopped=true;clearTimeout(this.timer);for(const timer of this.pending.values())clearTimeout(timer);this.pending.clear();for(const restore of this.graphs.values())restore();this.graphs.clear();for(const restore of this.graphNodes.values())restore();this.graphNodes.clear();const m=this.plugin.app.metadataCache;for(const path of this.entries.keys()){delete m.resolvedLinks[path];delete m.unresolvedLinks[path];}this.entries.clear();setTimeout(()=>{(m as any).trigger('resolved');},0);}
 }

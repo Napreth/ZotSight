@@ -2,7 +2,7 @@ export interface ZoteroSource {
   provider: 'zotero'; libraryType: 'user' | 'group'; libraryId: string; itemKey: string;
 }
 export interface Attachment {
-  id: string; title: string; kind: 'zotero' | 'vault' | 'local';
+  id: string; title: string; kind: 'zotero' | 'vault' | 'local' | 'package';
   key?: string; path?: string; contentType?: string;
   [key: string]: unknown;
 }
@@ -45,7 +45,7 @@ export function parseSeed(text: string): Seed {
   const base = newSeed();
   const seed = {...base, ...raw, metadata: {...base.metadata, ...(raw.metadata || {})}, reader: {...base.reader, ...(raw.reader || {})}} as Seed;
   if (typeof seed.metadata.title !== 'string' || !Array.isArray(seed.metadata.tags)) throw new Error('文献标题或标签格式无效。');
-  for (const a of seed.attachments) if (!record(a) || typeof a.id !== 'string' || typeof a.title !== 'string' || !['vault','local','zotero'].includes(a.kind)) throw new Error('附件格式无效。');
+  for (const a of seed.attachments) if (!record(a) || typeof a.id !== 'string' || typeof a.title !== 'string' || !['vault','local','zotero','package'].includes(a.kind)) throw new Error('附件格式无效。');
   for (const a of seed.annotations) if (!record(a) || typeof a.id !== 'string' || typeof a.attachmentId !== 'string' || !Number.isInteger(a.page) || a.page < 1 || typeof a.text !== 'string' || typeof a.comment !== 'string' || !Array.isArray(a.rects) || a.rects.some(r=>!Array.isArray(r) || r.length !== 4 || r.some(n=>!Number.isFinite(n)))) throw new Error('批注格式无效。');
   for (const a of seed.annotations) if(a.points!==undefined&&(!Array.isArray(a.points)||a.points.some(p=>!Array.isArray(p)||p.length!==2||p.some(n=>!Number.isFinite(n)))))throw new Error('手绘批注格式无效。');
   seed.reader.page = Math.max(1, Math.floor(Number(seed.reader.page) || 1));

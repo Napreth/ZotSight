@@ -1,0 +1,11 @@
+export declare const ROMAN_NUMERALS: readonly string[];
+export declare function getQuotePairs(): Map<string, string>;
+export declare const PARENS_REGEX: RegExp;
+export declare const EMAIL_REGEX: RegExp;
+export declare const NUMBERED_REFERENCE_REGEX: RegExp;
+export declare const SPACE_AFTER_SEPARATOR: RegExp;
+export declare const QUOTES_REGEX: RegExp;
+export declare const EXCLAMATION_WORDS: readonly string[];
+export declare const GLOBAL_SENTENCE_TERMINATORS: readonly string[];
+export declare const SENTENCE_TERMINATOR_SET: Set<string>;
+export declare const TERMINATORS_PATTERN: string;

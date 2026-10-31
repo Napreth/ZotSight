@@ -1,0 +1,33 @@
+{
+    "name": "sentencex-ts",
+    "version": "0.1.13-ts",
+    "description": "Rule-based sentence segmentation library; TS port of sentencex",
+    "homepage": "https://github.com/AbeJellinek/sentencex-ts",
+    "type": "module",
+    "main": "./dist/sentencex.cjs",
+    "module": "./dist/sentencex.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/sentencex.js",
+            "require": "./dist/sentencex.cjs"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "vite build && tsc --project tsconfig.build.json --emitDeclarationOnly",
+        "test": "vitest run",
+        "test:watch": "vitest"
+    },
+    "devDependencies": {
+        "@types/node": "^25.2.3",
+        "prettier": "^3.8.1",
+        "typescript": "^5.7.0",
+        "vite": "^6.0.0",
+        "vite-plugin-dts": "^4.0.0",
+        "vitest": "^3.0.0"
+    }
+}

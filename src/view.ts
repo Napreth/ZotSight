@@ -7,9 +7,12 @@ import { BindModal, message, PDFModal, run } from './ui';
 import { renderLiteratureInfo } from './info';
 import { SourceMenu } from './source-menu';
 import {AnnotationHistory} from './annotation-history';
+import type {ReaderState} from './api';
+import {seedViewUpdate} from './view-update';
 export const VIEW_TYPE='zotsight-literature';
 
 export class ZotSightView extends MarkdownView {
+  isPlaintext=false;
   seed:Seed|null=null;
   private invalid=false;private raw='';private loadVersion=0;private disposed=false;
   private reader?:PDFReader;private readerRoot?:HTMLElement;private surface?:HTMLElement;
@@ -22,6 +25,7 @@ export class ZotSightView extends MarkdownView {
   private resizeObserver?:ResizeObserver;private resizeTimer?:ReturnType<typeof setTimeout>;private changing=false;
   private layoutEl:HTMLElement;
   private projecting=false;
+  private savedSeed?:Seed;private diskLoad=0;
   private pdfFocused=false;private annotationHistory=new AnnotationHistory();
   private shortcutScope:Scope;private leftHost?:HTMLElement;
   constructor(leaf:WorkspaceLeaf,public plugin:ZotSightPlugin){
@@ -35,7 +39,7 @@ export class ZotSightView extends MarkdownView {
     });
     this.registerDomEvent(this.containerEl,'focusin',()=>this.activateShortcuts());this.registerDomEvent(this.containerEl,'pointerdown',()=>this.activateShortcuts(),true);
     this.registerDomEvent(this.containerEl,'focusout',()=>queueMicrotask(()=>{const focused=this.containerEl.doc.activeElement;if(focused!==this.containerEl.doc.body&&!this.containerEl.contains(focused))this.app.keymap.popScope(this.shortcutScope);}));
-    this.registerEvent(this.app.workspace.on('active-leaf-change',leaf=>{if(leaf!==this.leaf)this.app.keymap.popScope(this.shortcutScope);else this.activateShortcuts();}));
+    this.registerEvent(this.app.workspace.on('active-leaf-change',leaf=>{if(leaf!==this.leaf){this.app.keymap.popScope(this.shortcutScope);this.reader?.stopSpeech();}else this.activateShortcuts();}));
     this.register(()=>this.app.keymap.popScope(this.shortcutScope));
     this.registerDomEvent(this.contentEl,'keydown',event=>{const key=event.key.toLowerCase();if(!(event.ctrlKey||event.metaKey)||event.altKey||!['z','y'].includes(key)||!(event.target instanceof Element)||!event.target.closest('.cm-content'))return;event.preventDefault();event.stopPropagation();if(key==='y'||event.shiftKey)this.editor.redo();else this.editor.undo();this.onInternalDataChange();this.requestSave();},true);
   }
@@ -43,8 +47,17 @@ export class ZotSightView extends MarkdownView {
   getViewType():string{return VIEW_TYPE;}
   getDisplayText():string{return this.file?.basename||'ZotSight 文献';}
   getIcon():string{return 'book-open';}
-  canAcceptExtension(extension:string):boolean{return extension==='zsseed';}
-  private activateShortcuts():void{queueMicrotask(()=>{const focused=this.containerEl.doc.activeElement;if(!this.disposed&&this.app.workspace.activeLeaf===this.leaf&&(focused===this.containerEl.doc.body||this.containerEl.contains(focused)))this.app.keymap.pushScope(this.shortcutScope);});}
+  canAcceptExtension(extension:string):boolean{return extension==='zslp'||extension==='zsseed';}
+  async loadFileInternal(file:TFile,clear:boolean):Promise<void>{
+    const version=++this.diskLoad;
+    try{const seed=(await this.plugin.store.read(file)).seed();if(version!==this.diskLoad||this.file!==file)return;
+      this.captureNote();const next=structuredClone(seed);
+      if(!clear&&this.seed&&this.savedSeed)for(const key of Object.keys(this.seed))if(JSON.stringify(this.seed[key])!==JSON.stringify(this.savedSeed[key]))next[key]=this.seed[key];
+      this.savedSeed=structuredClone(seed);this.setViewData(serializeSeed(next),clear);
+    }catch(error){if(version===this.diskLoad&&this.file===file)this.setViewData('',clear,message(error));}
+  }
+  onExternalDataChange(file:TFile,data:string):void{if(file===this.file&&this.seed)this.setViewData(serializeSeed({...this.seed,note:data}),false);}
+  private activateShortcuts():void{queueMicrotask(()=>{const focused=this.containerEl.doc.activeElement;if(focused instanceof Element&&focused.closest('.zs-select-menu:not([hidden]),.zs-source-menu:not([hidden])'))return;if(!this.disposed&&this.app.workspace.activeLeaf===this.leaf&&(focused===this.containerEl.doc.body||this.containerEl.contains(focused)))this.app.keymap.pushScope(this.shortcutScope);});}
   private focusedArea(event:KeyboardEvent):'pdf'|'notes'|null{
     if(this.app.workspace.activeLeaf!==this.leaf)return null;
     for(const target of [event.target,this.containerEl.doc.activeElement]){if(!(target instanceof Node))continue;if(this.leftHost?.contains(target))return 'pdf';if(this.notesHost?.contains(target))return 'notes';}
@@ -74,25 +87,40 @@ export class ZotSightView extends MarkdownView {
   onInternalDataChange():void{
     if(!this.seed||this.projecting)return;const note=this.currentMode.get();if(this.data===note)return;
     this.data=note;this.captureNote();
-    // Native MarkdownView broadcasts quick-preview data to other leaves. Seed
-    // leaves exchange the complete document, while their editors retain Markdown.
+    // Quick-preview is Markdown, including for native consumers such as word count.
     const workspace=this.app.workspace as typeof this.app.workspace&{onQuickPreview?:(file:TFile|null,data:string)=>void};
-    workspace.onQuickPreview?.(this.file,serializeSeed(this.seed));
+    workspace.onQuickPreview?.(this.file,note);
     const native=this as unknown as {loadFrontmatter?:(markdown:string)=>void};native.loadFrontmatter?.(note);
   }
   getViewData():string{this.captureNote();return !this.invalid&&this.seed?serializeSeed(this.seed):this.raw;}
   async save(clear?:boolean):Promise<void>{
     this.captureNote();if(!this.file||this.invalid||!this.seed)return;
-    await super.save(clear);
-    if(!clear&&this.seed){this.data=super.getViewData();this.raw=serializeSeed(this.seed);}
+    const file=this.file,next=structuredClone(this.seed),previous=this.savedSeed;
+    if(!previous||serializeSeed(next)!==serializeSeed(previous)){await this.plugin.store.save(file,next,previous);if(this.file===file)this.savedSeed=next;}
+    if(this.file===file&&this.seed&&serializeSeed(this.seed)===serializeSeed(next))(this as unknown as {dirty:boolean}).dirty=false;
+    if(clear){this.savedSeed=undefined;this.clear();}
+    else if(this.seed){this.data=super.getViewData();this.raw=serializeSeed(this.seed);}
   }
-  setViewData(data:string,clear:boolean):void{
+  setViewData(data:string,clear:boolean,loadError?:string):void{
     this.raw=data;this.disposed=false;
     try{
-      const next=parseSeed(data);const same=!clear&&this.seed&&serializeSeed(next)===serializeSeed(this.seed);
+      if(loadError)throw Error(loadError);
+      const next=parseSeed(data);const update=seedViewUpdate(this.invalid?null:this.seed,next,clear);
       this.annotationHistory.sync(next.annotations);this.seed=next;this.invalid=false;this.data=next.note;
-      this.projecting=true;try{if(!same){this.render();super.setViewData(next.note,clear);}}finally{this.projecting=false;}
-    }catch(e){this.invalid=true;this.seed=null;void this.reader?.destroy();this.contentEl.remove();this.layoutEl.empty();const box=this.layoutEl.createDiv('zs-file-error');setIcon(box.createDiv('zs-empty-icon'),'file-warning');box.createEl('h2',{text:'无法打开这份文献'});box.createEl('p',{text:message(e)});box.createEl('p',{cls:'zs-muted',text:'可用文本编辑器修复 .zsseed；ZotSight 不会改写损坏的文件。'});}
+      this.projecting=true;
+      try{
+        if(update.rebuild){this.render();super.setViewData(next.note,clear);}
+        else{
+          if(update.note)super.setViewData(next.note,false);
+          const information=this.select?.value==='__info';
+          if(update.attachments||update.document){this.renderSourceOptions();if(information&&this.select)this.select.value='__info';}
+          if(update.split)this.layoutEl.querySelector<HTMLElement>('.zs-workspace')?.style.setProperty('--zs-split',`${next.reader.split}%`);
+          if(information){if(update.metadata||update.attachments)this.renderInfo();}
+          else if(update.document)void this.openAttachment();
+          else if(update.annotations)this.reader?.drawAnnotations();
+        }
+      }finally{this.projecting=false;}
+    }catch(e){this.invalid=true;this.seed=null;void this.reader?.destroy();this.contentEl.remove();this.layoutEl.empty();const box=this.layoutEl.createDiv('zs-file-error');setIcon(box.createDiv('zs-empty-icon'),'file-warning');box.createEl('h2',{text:'无法打开这份文献'});box.createEl('p',{text:message(e)});box.createEl('p',{cls:'zs-muted',text:'请检查文献包是否完整。ZotSight 不会改写损坏的文件。'});}
   }
   clear():void{this.loadVersion++;this.pendingPage=undefined;this.seed=null;this.raw='';this.invalid=false;this.annotationHistory=new AnnotationHistory();this.pdfFocused=false;this.contentEl.remove();this.layoutEl.empty();super.clear();void this.dispose();}
   async onClose():Promise<void>{this.app.keymap.popScope(this.shortcutScope);await this.save();await this.dispose();await super.onClose();}
@@ -107,7 +135,7 @@ export class ZotSightView extends MarkdownView {
     const left=workspace.createDiv('zs-reader-pane zs-reader-native');this.readerToolbar=left.createDiv('zs-reader-toolbar zs-main-toolbar');const sourceBar=this.readerToolbar.createDiv('zs-source-bar');
     this.leftHost=left;
     left.addEventListener('pointerdown',()=>{this.pdfFocused=true;},true);left.addEventListener('focusin',()=>{this.pdfFocused=true;});
-    this.select=new SourceMenu(sourceBar,id=>{if(!this.seed)return;if(id==='__info'){void this.reader?.destroy();this.reader=undefined;this.renderInfo();return;}if(id==='__add'){this.addPDF();return;}this.seed.reader.attachmentId=id;this.seed.reader.page=1;this.changed();void this.openAttachment();});
+    this.select=new SourceMenu(sourceBar,id=>{if(!this.seed)return;if(id==='__info'){void this.reader?.destroy();this.reader=undefined;this.renderInfo();this.emitReaderChange();return;}if(id==='__add'){this.addPDF();return;}this.seed.reader.attachmentId=id;this.seed.reader.page=1;this.changed();void this.openAttachment();},this.app);
     this.renderSourceOptions();
     this.surface=left.createDiv('zs-document-surface');
     const divider=workspace.createDiv({cls:'zs-divider',attr:{role:'separator','aria-orientation':'vertical','aria-label':'调整阅读与笔记宽度',tabindex:'0'}});
@@ -123,18 +151,19 @@ export class ZotSightView extends MarkdownView {
     if(this.seed.attachments.length)void this.openAttachment();else this.renderInfo();
   }
   private renderSourceOptions():void{
-    if(!this.select||!this.seed)return;this.select.update([{id:'__info',title:'信息',icon:'file-text'},...this.seed.attachments.map(a=>({id:a.id,title:a.title,icon:'file-type-2'})),{id:'__add',title:'关联 PDF…',icon:'plus'}],this.seed.attachments.some(a=>a.id===this.seed!.reader.attachmentId)?this.seed.reader.attachmentId:'__info');
+    if(!this.select||!this.seed)return;const translated=new Set(this.plugin.documentTranslation?.jobs.filter(j=>j.path===this.file?.path).flatMap(j=>j.outputs.filter(o=>o.kind==='pdf').map(o=>o.path))||[]);const originals=this.seed.attachments.filter(a=>!a.sourceAttachmentId&&!translated.has(a.path||''));const selected=this.plugin.documentTranslation?.sourceId(this.file?.path||'',this.seed.reader.attachmentId)||this.seed.reader.attachmentId;
+    this.select.update([{id:'__info',title:'信息',icon:'file-text'},...originals.map(a=>({id:a.id,title:a.title,icon:'file-type-2'})),{id:'__add',title:'关联 PDF…',icon:'plus'}],originals.some(a=>a.id===selected)?selected:'__info');
   }
   private async openAttachment():Promise<void>{
-    if(!this.seed||!this.surface)return;const a=this.seed.attachments.find(a=>a.id===this.seed!.reader.attachmentId)||this.seed.attachments[0];if(!a){this.renderInfo();return;}
-    this.seed.reader.attachmentId=a.id;if(this.select)this.select.value=a.id;
+    if(!this.seed||!this.surface)return;const a=this.seed.attachments.find(a=>a.id===this.seed!.reader.attachmentId)||this.seed.attachments[0];if(!a){void this.reader?.destroy();this.reader=undefined;this.renderInfo();return;}
+    this.seed.reader.attachmentId=a.id;if(this.select)this.select.value=this.plugin.documentTranslation?.sourceId(this.file?.path||'',a.id)||a.id;
     const version=++this.loadVersion;await this.reader?.destroy();if(version!==this.loadVersion)return;
     this.surface.empty();this.surface.createDiv({cls:'zs-reader-message',text:'正在读取附件…'});
     try{
-      const data=await this.plugin.readPDF(a,this.seed.source);if(version!==this.loadVersion||!this.seed)return;
+      const data=await this.plugin.readPDF(a,this.seed.source,this.file?.path);if(version!==this.loadVersion||!this.seed)return;
       this.surface.empty();this.readerRoot=this.surface.createDiv('zs-reader');
-      this.reader=new PDFReader(this.readerRoot,(page,zoom)=>{if(!this.seed||version!==this.loadVersion)return;if(this.seed.reader.page!==page||this.seed.reader.zoom!==zoom){this.seed.reader.page=page;this.seed.reader.zoom=zoom;this.changed();}},selection=>this.highlight(selection),selection=>this.quote(selection),()=>this.seed?.annotations.filter(n=>n.attachmentId===a.id)||[],{toolbar:this.readerToolbar,reflowLoader:this.plugin.readingLoader(this.readerRoot.win),reading:this.seed.reader.reading,onReadingChange:settings=>{if(this.seed&&version===this.loadVersion){this.seed.reader.reading=settings;this.changed();}},onUndo:redo=>this.undoAnnotation(redo),onAnnotationChange:id=>this.annotationChanged(id),onDeleteAnnotation:id=>{if(!this.seed)return;this.seed.annotations=this.seed.annotations.filter(n=>n.id!==id);this.annotationChanged();}});
-      await this.reader.load(data,this.seed.reader.page,this.seed.reader.zoom);
+      this.reader=new PDFReader(this.readerRoot,(page,zoom)=>{if(!this.seed||version!==this.loadVersion)return;if(this.seed.reader.page!==page||this.seed.reader.zoom!==zoom){this.seed.reader.page=page;this.seed.reader.zoom=zoom;this.changed();}},selection=>this.highlight(selection),selection=>this.quote(selection),()=>this.seed?.annotations.filter(n=>n.attachmentId===a.id)||[],{toolbar:this.readerToolbar,onDocumentMenu:anchor=>{if(this.file)void this.plugin.documentTranslation?.showVersionMenu(this.file.path,anchor);},speech:this.plugin.settings.speech,onSpeechSettings:settings=>{this.plugin.settings.speech=settings;void this.plugin.saveSettings();},translations:()=>Array.from(this.plugin.readingTranslations.values()).filter(t=>t.path===this.file?.path&&t.attachmentId===a.id),reflowLoader:this.plugin.readingLoader(this.readerRoot.win,this.file?.path,a.id),reading:this.seed.reader.reading,onReadingChange:settings=>{if(this.seed&&version===this.loadVersion){const previous=this.seed.reader.reading as {mode?:string;translationId?:string}|undefined;const modeChanged=previous?.mode!==settings.mode||previous?.translationId!==settings.translationId;this.seed.reader.reading=settings;this.changed();if(modeChanged)this.emitReaderChange();}},onUndo:redo=>this.undoAnnotation(redo),onAnnotationChange:id=>this.annotationChanged(id),onDeleteAnnotation:id=>{if(!this.seed)return;this.seed.annotations=this.seed.annotations.filter(n=>n.id!==id);this.annotationChanged();}});
+      await this.reader.load(data,this.seed.reader.page,this.seed.reader.zoom);if(version===this.loadVersion){this.refreshReadingControl();this.emitReaderChange();}
       if(version===this.loadVersion&&this.pendingPage!==undefined){const page=this.pendingPage;this.pendingPage=undefined;await this.reader.go(page);}
     }catch(e){if(version!==this.loadVersion)return;this.surface.empty();const box=this.surface.createDiv('zs-file-error');setIcon(box.createDiv('zs-empty-icon'),'file-search');box.createEl('h3',{text:'暂时无法读取 PDF'});box.createEl('p',{text:message(e)});const actions=box.createDiv('zs-empty-actions');actions.createEl('button',{text:'重试'}).onclick=()=>void this.openAttachment();actions.createEl('button',{text:'关联本地 PDF'}).onclick=()=>this.addPDF();}
   }
@@ -143,6 +172,16 @@ export class ZotSightView extends MarkdownView {
     renderLiteratureInfo(this.surface,this.seed);
     if(!this.seed.metadata.fields&&this.seed.source&&!this.infoLoading){this.infoLoading=true;const path=this.file?.path;const source={...this.seed.source};run(async()=>{try{const [item,children]=await Promise.all([this.plugin.client.item(source),this.plugin.client.children(source)]);const metadata=await this.plugin.client.describe(item,source,children);if(this.file?.path===path&&this.seed){this.seed.metadata={...this.seed.metadata,...metadata};this.changed();if(this.select?.value==='__info')this.renderInfo();}}finally{this.infoLoading=false;}});}
   }
+  private emitReaderChange():void{if(this.file&&this.seed)this.plugin.emit('reader-change',{path:this.file.path,seed:structuredClone(this.seed)});}
+  async sourcePreview(id:string):Promise<string>{return this.seed?.reader.attachmentId===id?await this.reader?.sourcePreview()||'':'';}
+  readerState():ReaderState|null{if(!this.file||!this.seed)return null;const id=this.seed.reader.attachmentId;return {path:this.file.path,mode:this.select?.value==='__info'||!this.reader?.ready?'unsupported':this.reader.mode,attachmentId:id,sourceAttachmentId:this.plugin.documentTranslation?.sourceId(this.file.path,id)||id,translationId:this.reader?.translationId};}
+  refreshReadingControl():void{if(!this.file||!this.seed)return;const module=this.plugin.documentTranslation,sourceId=module?.sourceId(this.file.path,this.seed.reader.attachmentId)||this.seed.reader.attachmentId;this.reader?.setDocumentMenu(!!module?.settings.replaceReadingButton&&module.hasTranslations(this.file.path,sourceId));}
+  refreshAttachments():void{const info=this.select?.value==='__info';this.renderSourceOptions();if(info&&this.select)this.select.value='__info';this.refreshReadingControl();this.emitReaderChange();}
+  async showAttachment(id:string,forcePDF=false):Promise<void>{if(!this.seed?.attachments.some(a=>a.id===id))throw Error('未找到 PDF 附件。');const changed=id!==this.seed.reader.attachmentId;this.seed.reader.attachmentId=id;if(forcePDF&&this.seed.reader.reading&&typeof this.seed.reader.reading==='object')(this.seed.reader.reading as {mode:string}).mode='pdf';this.changed();if(changed||!this.reader?.ready)await this.openAttachment();if(forcePDF)await this.reader?.toggleReadingMode(false);this.emitReaderChange();}
+  async showReadingVersion(id:string,translationId:string|null):Promise<void>{await this.showAttachment(id);await this.showReadingTranslation(translationId?this.plugin.readingTranslations.get(translationId)||null:null);this.emitReaderChange();}
+  refreshReadingTranslations():void{this.reader?.refreshTranslations();this.refreshReadingControl();this.emitReaderChange();}
+  async showReadingTranslation(translation:import('./reading-api').ReadingTranslation|null):Promise<void>{if(!this.seed)return;if(translation&&translation.attachmentId!==this.seed.reader.attachmentId){this.seed.reader.attachmentId=translation.attachmentId;await this.openAttachment();}else if(!this.reader?.ready)await this.openAttachment();if(!this.reader)throw Error('请先打开文献的 PDF 附件。');await this.reader.showReadingTranslation(translation?.id||null);}
+  refreshPanels():void{const previous=this.activePanel;this.renderRail();if(this.activePanel!==previous)this.renderPanel();}
   renderRail():void{
     if(!this.rail)return;this.rail.empty();
     const entries=[{id:'notes',icon:'notebook-pen',title:'笔记'},...Array.from(this.plugin.panels.values())];

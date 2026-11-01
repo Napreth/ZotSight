@@ -1,3 +1,4 @@
+import type {OutlineTranslation} from './outline';
 import type {StructuredDocumentText} from '../vendor/structured-document-text/schema';
 
 export interface ReadingDocument {
@@ -14,6 +15,7 @@ export interface ReadingTranslation {
   sourceHash:string;
   title:string;
   targetLanguage:string;
+  outline?:OutlineTranslation[];
   units:{ref:string;parts:ReadingTranslationPart[]}[];
 }
 

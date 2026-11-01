@@ -18,7 +18,7 @@ export class ArtifactWorkspace {
   }
   async checkpoint():Promise<void>{
     const files:Record<string,Uint8Array|string>={[`${this.job.id}/job.json`]:JSON.stringify(this.job,null,2)+'\n'};let size=0;
-    const walk=async(dir:string)=>{try{for(const entry of await readdir(dir,{withFileTypes:true})){if(entry.isSymbolicLink())continue;const path=join(dir,entry.name);if(entry.isDirectory())await walk(path);else{const name=relative(this.directory,path).replaceAll('\\','/');if(!allowed(name)||name==='job.json')continue;const stat=await lstat(path);if(stat.isSymbolicLink()||(size+=stat.size)>512*1024*1024)throw Error('翻译产物超过 512 MB。');files[`${this.job.id}/${artifactPath(name)}`]=new Uint8Array(await readFile(path));}}}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}};
+    const walk=async(dir:string)=>{try{for(const entry of await readdir(dir,{withFileTypes:true})){if(entry.isSymbolicLink())continue;const path=join(dir,entry.name);if(entry.isDirectory())await walk(path);else{const name=relative(this.directory,path).replaceAll('\\','/');if(!allowed(name)||name==='job.json'||this.job.deletedOutputs?.includes(this.prefix+name))continue;const stat=await lstat(path);if(stat.isSymbolicLink()||(size+=stat.size)>512*1024*1024)throw Error('翻译产物超过 512 MB。');files[`${this.job.id}/${artifactPath(name)}`]=new Uint8Array(await readFile(path));}}}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}};
     await walk(this.directory);await this.core().writeExtensionFiles(this.job.path,'translate',files);
   }
 }

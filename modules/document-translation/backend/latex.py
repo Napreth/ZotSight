@@ -35,7 +35,19 @@ def unpack_source(archive, directory):
                     raise ValueError('LaTeX 源码压缩包包含不安全的路径或链接。')
                 if member.size > 40 * 1024 * 1024:
                     raise ValueError('LaTeX 源码中的单个文件过大。')
-            bundle.extractall(destination, members=members, filter='data')
+            if callable(getattr(tarfile, 'data_filter', None)):
+                bundle.extractall(destination, members=members, filter='data')
+            else:
+                # Older Python 3.10 patch releases lack extraction filters.
+                # Members were validated above; copy only file contents.
+                for member in members:
+                    target = destination / member.name
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with bundle.extractfile(member) as source, target.open('wb') as output:
+                            shutil.copyfileobj(source, output)
     except tarfile.ReadError:
         if data.startswith(b'\x1f\x8b'):
             with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
@@ -214,6 +226,45 @@ def compatible_source(text, language, engine):
     return text
 
 
+def install_missing_tex(log, settings, emit, attempted):
+    config = settings.get('dependencies', {}).get('tex', {})
+    if config.get('method') != 'portable-basic' or not config.get('directory'):
+        return False
+    match = re.search(r"(?:LaTeX Error: File|I can't find file) [`']([^`'\r\n]+)[`'](?: not found)?", log)
+    if not match:
+        return False
+    name = Path(match.group(1)).name
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or Path(name).suffix.lower() not in {'.sty', '.cls', '.def', '.cfg', '.clo', '.fd', '.tfm', '.otf', '.ttf', '.map', '.enc', '.bst'} or name in attempted:
+        return False
+    attempted.add(name)
+    root = Path(config['directory']).resolve()
+    if os.name == 'nt':
+        command = [str(root/'tlpkg/tlperl/bin/perl.exe'), str(root/'texmf-dist/scripts/texlive/tlmgr.pl')]
+    else:
+        bins = [p for p in (root/'bin').glob('*/tlmgr') if p.is_file()]
+        if not bins:
+            return False
+        command = [str(bins[0])]
+    env = dict(os.environ, LANG='C', LC_ALL='C')
+    if os.name == 'nt':
+        env.update(PERL5LIB=str(root/'tlpkg/tlperl/lib'), PERL5OPT='', PERLLIB='', PERL5DB='', PERL5SHELL='', PERLIO='', PERL_UNICODE='')
+        env['PATH'] = str(root/'bin/windows') + os.pathsep + str(root/'tlpkg/tlperl/bin') + os.pathsep + env.get('PATH', '')
+    else:
+        env['PATH'] = str(bins[0].parent) + os.pathsep + env.get('PATH', '')
+    command += ['--repository', 'https://mirror.ctan.org/systems/texlive/tlnet']
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    emit('progress', {'message': '联网查找缺少的 TeX 文件：' + name})
+    result = subprocess.run(command + ['search', '--global', '--file', '/' + re.escape(name) + '$'], capture_output=True, timeout=180, creationflags=flags, env=env)
+    packages = re.findall(r'^([A-Za-z0-9][A-Za-z0-9_.-]*):\s*$', result.stdout.decode('utf-8', errors='replace'), re.M)
+    if result.returncode or not packages:
+        return False
+    emit('progress', {'message': '正在下载 TeX 宏包：' + ', '.join(packages)})
+    installed = subprocess.run(command + ['install', *packages], capture_output=True, timeout=900, creationflags=flags, env=env)
+    if installed.returncode:
+        raise RuntimeError('TeX 宏包下载失败，请检查网络。' + installed.stderr.decode('utf-8', errors='replace')[-1500:])
+    return True
+
+
 def compile_project(directory, main, language, settings, emit):
     root = Path(directory).resolve()
     source = (root / main).resolve()
@@ -241,9 +292,13 @@ def compile_project(directory, main, language, settings, emit):
         for pass_number in range(3):
             emit('progress', {'message': f'{engine} 编译（第 {pass_number + 1} 遍）'})
             command = [executable, '-no-shell-escape', '-interaction=nonstopmode', '-halt-on-error', '-file-line-error', '-output-directory=' + str(build), source.relative_to(root).as_posix()]
-            process = subprocess.run(command, cwd=root, env=env, capture_output=True, timeout=180, creationflags=flags)
-            log = (process.stdout + process.stderr).decode('utf-8', errors='replace')
-            logs.append(log)
+            attempted = set()
+            for repair in range(13):
+                process = subprocess.run(command, cwd=root, env=env, capture_output=True, timeout=180, creationflags=flags)
+                log = (process.stdout + process.stderr).decode('utf-8', errors='replace')
+                logs.append(log)
+                if not process.returncode or repair == 12 or not install_missing_tex(log, settings, emit, attempted):
+                    break
             if process.returncode:
                 success = False
                 break

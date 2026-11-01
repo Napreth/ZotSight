@@ -89,7 +89,7 @@ export class PDFModal extends Modal {
   constructor(app:App,private choose:(kind:'vault'|'local',path:string)=>Promise<void>){super(app);}
   onOpen():void{
     this.titleEl.setText('关联 PDF');let value='';
-    new Setting(this.contentEl).setName('文件路径').setDesc('库内相对路径，或本机 PDF 的完整路径。文件不会被复制或修改。').addText(t=>t.setPlaceholder('附件/paper.pdf').onChange(v=>value=v.trim()));
+    new Setting(this.contentEl).setName('文件路径').setDesc('库内相对路径，或本机 PDF 的完整路径。').addText(t=>t.setPlaceholder('附件/paper.pdf').onChange(v=>value=v.trim()));
     const input=this.contentEl.createEl('input',{type:'file',attr:{accept:'.pdf,application/pdf','aria-label':'选择 PDF'}});
     input.addEventListener('change',()=>run(async()=>{const file=input.files?.[0];if(!file)return;const electron=await import('electron');const path=electron.webUtils?.getPathForFile(file)||(file as File&{path?:string}).path;if(!path)throw new Error('无法获取路径，请填写 PDF 完整路径。');await this.choose('local',path);this.close();}));
     new Setting(this.contentEl).addButton(b=>b.setButtonText('关联 PDF').setCta().onClick(()=>run(async()=>{if(!/\.pdf$/i.test(value))throw new Error('请选择 PDF 文件。');await this.choose(/^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(value)?'local':'vault',value);this.close();})));
@@ -103,11 +103,11 @@ export class ZotSightSettings extends PluginSettingTab {
   constructor(app:App,private plugin:ZotSightPlugin){super(app,plugin);}
   display():void{
     this.moduleCleanup?.();const el=this.containerEl;el.empty();el.createEl('h2',{text:'ZotSight'});
-    new Setting(el).setName('Zotero 本地 API').setDesc('在 Zotero 设置 → 高级中允许其他应用通信。无需 API Key。').addText(t=>t.setValue(this.plugin.settings.apiBase).onChange(v=>{this.plugin.settings.apiBase=v.trim();void this.plugin.saveSettings();}));
+    new Setting(el).setName('Zotero 本地 API').setDesc('在 Zotero 设置 → 高级中允许其他应用通信。').addText(t=>t.setValue(this.plugin.settings.apiBase).onChange(v=>{this.plugin.settings.apiBase=v.trim();void this.plugin.saveSettings();}));
     new Setting(el).setName('连接测试').addButton(b=>b.setButtonText('测试连接').onClick(()=>run(async()=>{await this.plugin.client.search('',0);new Notice('已连接 Zotero。');})));
     new Setting(el).setName('默认文献库').addDropdown(d=>d.addOption('user','个人库').addOption('group','群组库').setValue(this.plugin.settings.libraryType).onChange(v=>{this.plugin.settings.libraryType=v as 'user'|'group';void this.plugin.saveSettings();}));
     new Setting(el).setName('Library ID').setDesc('个人本机库使用 0，群组库填写数字 ID。').addText(t=>t.setValue(this.plugin.settings.libraryId).onChange(v=>{this.plugin.settings.libraryId=v.trim();void this.plugin.saveSettings();}));
     new Setting(el).setName('新文献文件夹').addText(t=>t.setValue(this.plugin.settings.folder).onChange(v=>{this.plugin.settings.folder=v.trim();void this.plugin.saveSettings();}));
-    el.createEl('p',{cls:'zs-muted',text:'笔记、批注和文档翻译保存在 .zslp 文献包中。书目标题与文件名分别保存。'});this.moduleCleanup=this.plugin.documentTranslation?.renderSettings(el);
+    this.moduleCleanup=this.plugin.documentTranslation?.renderSettings(el);
   }
 }

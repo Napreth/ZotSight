@@ -35,8 +35,8 @@ export function newSeed(title = '未命名文献'): Seed {
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 export function parseSeed(text: string): Seed {
   let raw: unknown;
-  try { raw = JSON.parse(text.replace(/^\uFEFF/, '')); } catch { throw new Error('文献文件不是有效的 JSON。请修复文件后重新打开；原文件不会被覆盖。'); }
-  if (!record(raw) || raw.schemaVersion !== 1) throw new Error('不支持的文献文件版本；请升级 ZotSight。原文件不会被覆盖。');
+  try { raw = JSON.parse(text.replace(/^\uFEFF/, '')); } catch { throw new Error('文献文件不是有效的 JSON。请修复文件后重新打开。'); }
+  if (!record(raw) || raw.schemaVersion !== 1) throw new Error('不支持的文献文件版本；请升级 ZotSight。');
   if (typeof raw.note !== 'string') throw new Error('文献文件缺少 Markdown 笔记字段。');
   if (raw.source !== null && (!record(raw.source) || raw.source.provider !== 'zotero' || !['user','group'].includes(String(raw.source.libraryType)) || !/^\d+$/.test(String(raw.source.libraryId)) || !/^[A-Z0-9]{8}$/.test(String(raw.source.itemKey)))) throw new Error('Zotero 文献标识无效。');
   if (raw.metadata !== undefined && !record(raw.metadata)) throw new Error('文献信息格式无效。');

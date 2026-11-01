@@ -1,3 +1,4 @@
+import {structureOutline} from './outline';
 import type {StructuredDocumentText} from '../vendor/structured-document-text/schema';
 import {renderSDT} from '../vendor/zotero-reader/renderer';
 import type {Annotation} from './model';
@@ -46,6 +47,8 @@ export class ReflowView {
     }catch(error){if(this.disposed)return;if(!status.isConnected){this.scroll.empty();this.scroll.append(status);}status.setText(`无法生成阅读模式：${error instanceof Error?error.message:String(error)}`);status.createEl('p',{text:'可用顶部阅读模式按钮返回原 PDF。'});this.loadTask=undefined;throw error;}
   }
   setSpeechBlocks(refs:string[]):void{this.article?.querySelectorAll('.zs-speech-active').forEach(el=>el.removeClass('zs-speech-active'));let first:HTMLElement|undefined;for(const ref of refs){const block=Array.from(this.article?.querySelectorAll<HTMLElement>('[data-ref-path]')||[]).find(el=>el.dataset.refPath===ref);if(block){block.addClass('zs-speech-active');first ||= block;}}if(first&&!this.scroll.hidden){const rect=first.getBoundingClientRect(),view=this.scroll.getBoundingClientRect();if(rect.bottom>view.bottom||rect.top<view.top)this.scroll.scrollTop+=rect.top-view.top-40;}}
+  get outline(){return this.structure?structureOutline(this.structure):[];}
+  goRef(ref:string):boolean{const block=[...this.article?.querySelectorAll<HTMLElement>('[data-ref-path]')||[]].find(el=>el.dataset.refPath===ref);if(!block)return false;this.scroll.scrollTop+=block.getBoundingClientRect().top-this.scroll.getBoundingClientRect().top-24;return true;}
   get translated():boolean{return !!this.translation;}
   setTranslation(translation:ReadingTranslation|null):void{if(this.translation===translation)return;this.translation=translation;if(this.structure){const anchor=this.anchor();this.renderDocument();this.go(anchor);}}
   private renderDocument():void{

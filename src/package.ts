@@ -14,7 +14,7 @@ export class LiteraturePackage {
   constructor(bytes?:Uint8Array){
     if(!bytes)return;if(bytes.length>MAX_TOTAL)throw Error('文献包超过 1 GB。');const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);let end=-1;
     for(let i=bytes.length-22;i>=Math.max(0,bytes.length-65557);i--)if(v.getUint32(i,true)===0x06054b50&&i+22+v.getUint16(i+20,true)===bytes.length){end=i;break;}
-    if(end<0)throw Error('文献包不是有效的 ZIP。原文件不会被覆盖。');
+    if(end<0)throw Error('文献包不是有效的 ZIP。');
     const count=v.getUint16(end+10,true),start=v.getUint32(end+16,true),length=v.getUint32(end+12,true);
     if(v.getUint16(end+4,true)||v.getUint16(end+6,true)||v.getUint16(end+8,true)!==count||count===65535||start+length!==end)throw Error('不支持分卷或 ZIP64 文献包。');
     let offset=start,total=0;
@@ -31,6 +31,7 @@ export class LiteraturePackage {
     if(offset!==end)throw Error('文献包目录长度无效。');
   }
   list(prefix=''):string[]{return [...this.entries.keys()].filter(name=>name.startsWith(prefix)).sort();}
+  delete(name:string):void{packagePath(name);if(this.entries.delete(name))this.dirty=true;}
   read(name:string):Uint8Array|null{const e=this.entries.get(packagePath(name));if(!e)return null;const bytes=e.method===0?e.compressed.slice():inflateSync(e.compressed,{out:new Uint8Array(e.size)});if(bytes.length!==e.size||crc(bytes)!==e.crc)throw Error(`文献包成员校验失败：${name}`);return bytes;}
   text(name:string):string|null{const bytes=this.read(name);return bytes===null?null:decoder.decode(bytes);}
   set(name:string,data:Uint8Array|string):void{packagePath(name);const bytes=typeof data==='string'?encoder.encode(data):data;if(bytes.length>MAX)throw Error('包内单个文件超过 512 MB。');const checksum=crc(bytes),old=this.entries.get(name);if(old&&old.size===bytes.length&&old.crc===checksum)return;const packed=bytes.length<8*1024*1024&&!/\.(pdf|zip|gz|png|jpe?g|tar)$/i.test(name)?deflateSync(bytes,{level:6}):bytes;this.entries.set(name,{name,method:packed===bytes?0:8,crc:checksum,size:bytes.length,compressed:packed});this.dirty=true;}

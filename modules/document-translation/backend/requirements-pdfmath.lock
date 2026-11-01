@@ -68,7 +68,7 @@ opentelemetry-api==1.45.2
 orjson==3.13.0
 packaging==26.3
 pandas==3.1.0
-pdf2zh @ git+https://github.com/PDFMathTranslate/PDFMathTranslate@6e982e2c33ddecd225b8a34af3a61c597f223c77
+pdf2zh @ https://github.com/PDFMathTranslate/PDFMathTranslate/archive/6e982e2c33ddecd225b8a34af3a61c597f223c77.zip#sha256=34edc5bfd4fde1b3b51b733896c1793fc46aed926dee46c73605310e11dfffbe
 pdfminer-six==20250416
 peewee==3.18.3
 pikepdf==10.17.0

@@ -30,7 +30,7 @@ export interface ZotSightAPI {
   readPackageFile(path:string,entry:string):Promise<Uint8Array|null>;
   listPackageFiles(path:string,prefix?:string):Promise<string[]>;
   writeExtensionFiles(path:string,namespace:string,files:Record<string,Uint8Array|string>):Promise<void>;
-  registerPackagePDF(path:string,entry:string,title:string,previousPath?:string):Promise<Attachment>;
+  registerPackagePDF(path:string,entry:string,title:string,previousPath?:string,outline?:import('./outline').OutlineTranslation[]):Promise<Attachment>;
   showAttachment(path:string,id:string):Promise<void>;
   registerPDFAttachment(path:string,filePath:string,title:string):Promise<Attachment>;
   registerPanel(panel: LiteraturePanel): ()=>void;

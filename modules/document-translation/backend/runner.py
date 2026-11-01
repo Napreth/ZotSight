@@ -50,11 +50,20 @@ def extract_tex(data):
     output = Path(data['project'])
     output.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
     # LaTeXML provides a semantic HTML view. Source ranges remain authoritative for reinsertion.
-    executable = data.get('runtime', {}).get('latexml') or shutil.which('latexmlc')
+    runtime = data.get('runtime', {})
+    oxide = runtime.get('dependencies', {}).get('latexml', {}).get('method') == 'oxide'
+    executable = runtime.get('latexml') or (None if oxide else shutil.which('latexmlc'))
     if executable:
         emit('progress', {'message': 'LaTeXML：生成语义 HTML…'})
         html = root / 'source.html'
-        process = subprocess.run([executable, '--format=html5', '--dest=' + str(html), result['main']],
+        destination = '--destination=' if 'oxide' in Path(executable).name.lower() else '--dest='
+        command = [executable]
+        if sys.platform == 'win32' and not executable.lower().endswith('.exe'):
+            perl = runtime.get('dependencies', {}).get('latexml', {}).get('perl') or shutil.which('perl')
+            if not perl:
+                raise RuntimeError('指定的 LaTeXML 脚本需要 Perl。')
+            command = [perl, '-x', executable]
+        process = subprocess.run(command + ['--format=html5', destination + str(html), result['main']],
             cwd=root, capture_output=True, timeout=180, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if process.returncode == 0 and html.exists():
             result['semanticHtml'] = str(html)
